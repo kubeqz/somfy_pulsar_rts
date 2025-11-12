@@ -12,24 +12,53 @@ enum class ReceiverState
     PREAMBLE_ERROR
 };
 
+constexpr unsigned MessageLength = 10;
+
+struct Message
+{
+    union {
+        uint8_t data[MessageLength];
+        struct {
+            uint8_t reserved;
+            uint8_t crc;
+            uint8_t counter[2];
+            uint8_t buttonId;
+            uint8_t remoteId0;
+            uint8_t remoteId1;
+            uint8_t const_data[3];
+        } frame;
+    };
+};
+
 class SomfyRtsReceiver
 {
 private:
-    void convert_bit(void);
-    void decrypt(void);
-    void check_crc(void);
-    void btn_repeat(void);
+    void convert_bit();
+    void decrypt();
+    void checkCrc();
     static void handleInterrupt();
 
+    static bool m_wait;
+    static bool m_received;
+    static int m_interruptPin;
+    static bool m_lastBit;
+    static unsigned m_bitCount;
+
+    static bool m_decodedBin[MessageLength * 8];
+    uint8_t m_decodedSig[MessageLength];
+    uint8_t m_decodedDec[MessageLength];
+    uint8_t m_encryptedDec[MessageLength];
+
 public:
-    void init(void);
-    void enableReceive(void);
-    void disableReceive(void);
+    void init();
+    void enableReceive();
+    void disableReceive();
 
-    void printDebug(void);
-    ReceiverState getState(void);
+    void printDebug();
+    ReceiverState getState();
 
-    bool receive(void);
-    int received_code(int addr, bool c);
-    void clear_received(void);
+    Message getMessage();
+
+    bool receive();
+    void clear();
 };
