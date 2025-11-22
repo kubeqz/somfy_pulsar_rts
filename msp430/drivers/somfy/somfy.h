@@ -30,15 +30,29 @@ struct Message
     };
 };
 
+class SomfyRtsListener
+{
+public:
+    virtual void onReceiveFinished() = 0;
+    virtual void onReceiveFailed() = 0;
+};
+
 class SomfyRtsReceiver
 {
 public:
     static void handleInterrupt();
 
+    void setListener(SomfyRtsListener& listener)
+    {
+        m_listener = &listener;
+    }
+
 private:
     void convert_bit();
     void decrypt();
     void checkCrc();
+
+    static SomfyRtsListener* m_listener;
 
     static bool m_wait;
     static bool m_received;

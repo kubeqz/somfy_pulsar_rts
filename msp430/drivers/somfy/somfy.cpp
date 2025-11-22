@@ -7,12 +7,14 @@
 #include <cstring>
 
 /* --- Pin mapping (MSP430G2553) ---
-   SPI (USCI_B0): P1.5 = SCK, P1.6 = MISO, P1.7 = MOSI
-   CS (SS) default: P1.4 (BIT4)
-   GDO pins: P2.1 (GDO2 / RX)
+   P1.5 = SCK
+   P1.6 = MISO
+   P1.7 = MOSI
+   P1.4 = CS
+   P2.1 = GDO2
 */
 
-constexpr uint8_t GDO2_PIN_MASK = BIT1; // P2.1
+constexpr uint8_t GDO2_PIN_MASK = BIT1;
 
 constexpr unsigned PULSE_TIME_US_MIN = 500;
 constexpr unsigned PULSE_TIME_US_MAX = 800;
@@ -24,33 +26,15 @@ int SomfyRtsReceiver::m_interruptPin = 0;
 bool SomfyRtsReceiver::m_lastBit = 0;
 unsigned SomfyRtsReceiver::m_bitCount = 0;
 bool SomfyRtsReceiver::m_decodedBin[MessageLength * 8];
+SomfyRtsListener* SomfyRtsReceiver::m_listener = nullptr;
 
-// static CC1101 instance used by somfy
-extern CC1101 cc1101; // defined in cc1101.cpp
-
-static volatile uint32_t g_millis = 0;
+extern CC1101 cc1101;
 
 static void timer_init()
 {
-    // Configure Timer_A0 CCR0 for 1ms ticks: SMCLK / 1000
-    TA0CCTL0 = CCIE;            // CCR0 interrupt enabled
-    TA0CCR0 = 8000 - 1;         // assuming SMCLK ~= 8MHz -> 1 ms
-    TA0CTL = TASSEL_2 | MC_1 | TACLR; // SMCLK, up mode
-
     TA1CCTL0 = 0;
     // SMCLK, divide clock /8 (1 tick is 1 us), count up to 0xFFFF
     TA1CTL = TASSEL_2 | MC_2 | TACLR | ID_3;
-}
-
-extern "C" __attribute__((interrupt(TIMER0_A0_VECTOR))) void Timer_A0_CCR0_ISR()
-{
-    ++g_millis;
-    TA0CCTL0 &= ~CCIFG;
-}
-
-static inline uint32_t millis_ms()
-{
-    return g_millis;
 }
 
 static inline uint32_t micros_us()
@@ -214,8 +198,8 @@ void SomfyRtsReceiver::clear()
     m_received = 0;
     m_bitCount = 0;
     m_lastBit = 0;
-    m_receiverState = ReceiverState::IDLE;
     m_wait = 0;
+    m_receiverState = ReceiverState::IDLE;
 
     for (unsigned i = 0; i < MessageLength; i++)
     {
@@ -230,27 +214,23 @@ void SomfyRtsReceiver::clear()
 
 void SomfyRtsReceiver::handleInterrupt()
 {
-    static uint32_t additionalTime = 0;
-    static uint32_t resetTime = 0;
+    static uint32_t timeShift = 0;
 
-    uint32_t usTimeBetweenEdges = micros_us() - additionalTime;
-    additionalTime = 0;
+    uint32_t usTimeBetweenEdges = micros_us() - timeShift;
+    timeShift = 0;
 
     // start measuring time to the next edge
     micros_reset();
 
-    if ((g_millis - resetTime) > 100)
+    if (m_receiverState == ReceiverState::IDLE)
     {
+        m_receiverState = ReceiverState::WAIT_FOR_PREAMBLE_END;
+
         m_bitCount = 0;
         m_lastBit = 0;
-        m_receiverState = ReceiverState::WAIT_FOR_PREAMBLE_END;
         m_wait = 0;
-
-        resetTime = millis_ms();
         return;
     }
-
-    resetTime = g_millis;
 
     if ((m_receiverState == ReceiverState::PREAMBLE_ERROR) ||
         (m_receiverState == ReceiverState::DATA_ERROR))
@@ -272,14 +252,19 @@ void SomfyRtsReceiver::handleInterrupt()
                 // SW sync detected, this means end of preamble
                 m_receiverState = ReceiverState::DATA;
                 m_lastBit = 1;
+
                 // shift time by PULSE_TIME_US as we're in the middle of symbol
-                additionalTime = PULSE_TIME_US;
+                timeShift = PULSE_TIME_US;
             }
             else
             {
                 // unexpected time between edges
                 m_receiverState = ReceiverState::PREAMBLE_ERROR;
                 detach_port2(GDO2_PIN_MASK);
+
+                if (m_listener) {
+                    m_listener->onReceiveFailed();
+                }
             }
         }
         else if (m_receiverState == ReceiverState::DATA)
@@ -316,6 +301,10 @@ void SomfyRtsReceiver::handleInterrupt()
             {
                 m_receiverState = ReceiverState::DATA_ERROR;
                 detach_port2(GDO2_PIN_MASK);
+
+                if (m_listener) {
+                    m_listener->onReceiveFailed();
+                }
             }
         }
 
@@ -323,6 +312,10 @@ void SomfyRtsReceiver::handleInterrupt()
         {
             m_receiverState = ReceiverState::FINISHED;
             detach_port2(GDO2_PIN_MASK);
+
+            if (m_listener) {
+                m_listener->onReceiveFinished();
+            }
         }
     }
 }
